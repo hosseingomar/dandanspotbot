@@ -109,18 +109,16 @@ The bot will download the tracks and send them directly to you.
 
 ```
 Spotify Downloader/
-├── .env                  # Your secret tokens and credentials
+├── .env                  # Your secret tokens and credentials (local only)
 ├── .env.example          # Template for environment configuration
 ├── .dockerignore         # Docker build ignore rules
 ├── Dockerfile            # Production container configuration (Python 3.11 + FFmpeg)
-├── render.yaml           # Render deployment blueprint
 ├── bot.py                # Telegram bot handlers & background job
 ├── config.py             # Configuration loader & cloud environment settings
 ├── database.py           # Universal SQLite / PostgreSQL database engine
 ├── downloader.py         # yt-dlp & mutagen audio download and tagging engine
 ├── main.py               # Main application entry point & cloud health check server
 ├── requirements.txt      # Python dependencies
-├── run.bat               # Windows one-click launcher
 └── spotify_service.py    # Spotify Web API and OAuth integration
 ```
 
