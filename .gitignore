@@ -10,6 +10,7 @@ ENV/
 # Secrets & Database
 .env
 data.db
+cookies/
 
 # Audio downloads
 downloads/*

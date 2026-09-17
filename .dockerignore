@@ -9,6 +9,7 @@ venv/
 .git/
 .gitignore
 .env
+cookies/
 data.db
 downloads/*
 !downloads/.gitkeep
