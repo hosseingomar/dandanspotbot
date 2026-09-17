@@ -64,10 +64,21 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
             }
         ],
         "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
         "default_search": "ytsearch",
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web", "mweb", "ios"]
+            }
+        },
     }
+
+    cookies_path = config.get_youtube_cookies_path()
+    if cookies_path:
+        ydl_opts["cookiefile"] = str(cookies_path)
+        logger.info("Using configured YouTube cookies for yt-dlp.")
 
     logger.info("Starting download for '%s - %s' with query '%s'", artist, title, query)
     try:

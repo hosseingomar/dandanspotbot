@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -22,6 +23,12 @@ import spotify_service
 import downloader
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SendAudioResult:
+    success: bool
+    user_message: str = ""
 
 
 def is_user_allowed(user_id: int) -> bool:
@@ -312,7 +319,7 @@ async def send_audio_track(
     chat_id: int,
     track_info: Dict[str, Any],
     status_message: Optional[Any] = None,
-) -> bool:
+) -> SendAudioResult:
     """Download and dispatch an audio file to Telegram chat with rich metadata, generous upload timeout, and retry."""
     title = track_info.get("title", "Unknown Title")
     artist = track_info.get("artist", "Unknown Artist")
@@ -326,7 +333,10 @@ async def send_audio_track(
         mp3_file = await downloader.download_track_async(track_info)
         if not mp3_file or not mp3_file.exists():
             logger.error("Download failed for track: %s - %s", artist, title)
-            return False
+            return SendAudioResult(
+                False,
+                "❌ Could not download this audio from YouTube. The hosting service may be blocking the server; please try again later.",
+            )
 
         if status_message:
             try:
@@ -371,7 +381,7 @@ async def send_audio_track(
                             thumb_fh.close()
 
                 logger.info("Successfully sent '%s - %s' to chat %d", artist, title, chat_id)
-                return True
+                return SendAudioResult(True)
 
             except Exception as upload_err:
                 logger.warning(
@@ -384,8 +394,11 @@ async def send_audio_track(
                     raise upload_err
 
     except Exception as e:
-        logger.error("Failed to send audio '%s - %s': %s", artist, title, e)
-        return False
+        logger.exception("Failed to send audio '%s - %s'", artist, title)
+        return SendAudioResult(
+            False,
+            "❌ Download completed, but Telegram could not receive the audio. Please try again later.",
+        )
     finally:
         if mp3_file and mp3_file.exists():
             try:
@@ -456,13 +469,13 @@ async def check_and_sync_user(
             parse_mode=ParseMode.HTML,
         )
 
-        success = await send_audio_track(application, chat_id, track)
-        if success:
+        result = await send_audio_track(application, chat_id, track)
+        if result.success:
             sent_count += 1
         else:
             await application.bot.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ Could not download <b>{track['title']}</b> - <i>{track['artist']}</i>.",
+                text=f"⚠️ Could not download <b>{track['title']}</b> - <i>{track['artist']}</i>.\n{result.user_message}",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -549,11 +562,11 @@ async def handle_spotify_download(
             f"⏳ Downloading: <b>{track_info['artist']} - {track_info['title']}</b>...",
             parse_mode=ParseMode.HTML,
         )
-        success = await send_audio_track(context.application, chat.id, track_info, status_message=status_msg)
-        if success:
+        result = await send_audio_track(context.application, chat.id, track_info, status_message=status_msg)
+        if result.success:
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ Failed to send audio. The connection to Telegram timed out. Please try again or check your network.")
+            await status_msg.edit_text(result.user_message)
         return
 
     # Handle Playlist or Album
@@ -642,8 +655,8 @@ async def handle_spotify_download(
             except Exception:
                 pass
 
-            success = await send_audio_track(context.application, chat.id, track)
-            if success:
+            result = await send_audio_track(context.application, chat.id, track)
+            if result.success:
                 completed += 1
 
             await asyncio.sleep(1.0)

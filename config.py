@@ -1,5 +1,9 @@
+import atexit
+import base64
+import binascii
 import os
 import sys
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -28,6 +32,57 @@ SPOTIPY_REDIRECT_URI = os.getenv(
 
 # Optional Telegram Proxy (e.g., http://127.0.0.1:10809 or socks5://127.0.0.1:10808)
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "").strip()
+
+# Optional YouTube cookies for cloud deployments. This must be the Base64-encoded
+# content of a Netscape-format cookies.txt file, stored as a platform secret.
+# A local file path is also supported for development.
+YOUTUBE_COOKIES_B64 = os.getenv("YOUTUBE_COOKIES_B64", "").strip()
+YOUTUBE_COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
+_runtime_cookies_path: Path | None = None
+
+
+def get_youtube_cookies_path() -> Path | None:
+    """Return a yt-dlp cookie file without ever logging its contents."""
+    global _runtime_cookies_path
+
+    if YOUTUBE_COOKIES_FILE:
+        candidate = Path(YOUTUBE_COOKIES_FILE)
+        if candidate.is_file():
+            return candidate
+        print("YOUTUBE_COOKIES_FILE does not exist; continuing without YouTube cookies.", file=sys.stderr)
+        return None
+
+    if not YOUTUBE_COOKIES_B64:
+        return None
+
+    if _runtime_cookies_path and _runtime_cookies_path.is_file():
+        return _runtime_cookies_path
+
+    try:
+        cookie_data = base64.b64decode(YOUTUBE_COOKIES_B64, validate=True)
+        if not cookie_data.strip():
+            raise ValueError("decoded value is empty")
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix="yt-dlp-cookies-", suffix=".txt", delete=False
+        ) as cookie_file:
+            cookie_file.write(cookie_data)
+            _runtime_cookies_path = Path(cookie_file.name)
+        os.chmod(_runtime_cookies_path, 0o600)
+        return _runtime_cookies_path
+    except (binascii.Error, ValueError) as exc:
+        print(f"YOUTUBE_COOKIES_B64 is invalid ({exc}); continuing without YouTube cookies.", file=sys.stderr)
+        return None
+
+
+def _remove_runtime_cookies() -> None:
+    if _runtime_cookies_path:
+        try:
+            _runtime_cookies_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+atexit.register(_remove_runtime_cookies)
 
 # Monitoring & Downloading Settings
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))

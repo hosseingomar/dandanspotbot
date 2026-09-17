@@ -101,6 +101,16 @@ Simply paste any Spotify URL into the chat:
 - **Playlist**: `https://open.spotify.com/playlist/...`
 - **Album**: `https://open.spotify.com/album/...`
 
+### YouTube verification on cloud hosts
+
+Cloud IP addresses can trigger YouTube's “Sign in to confirm you’re not a bot” check. If that occurs, export a **Netscape-format** `cookies.txt` from a dedicated logged-in YouTube account, then create this Base64 value locally:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt"))
+```
+
+Add the resulting value as the `YOUTUBE_COOKIES_B64` **secret/environment variable** in Back4App, then redeploy. Never commit the cookie file or its Base64 value. Cookies can expire and may need to be replaced.
+
 The bot will download the tracks and send them directly to you.
 
 ---
