@@ -1,6 +1,7 @@
 import atexit
 import base64
 import binascii
+import gzip
 import os
 import sys
 import tempfile
@@ -36,7 +37,12 @@ TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "").strip()
 # Optional YouTube cookies for cloud deployments. This must be the Base64-encoded
 # content of a Netscape-format cookies.txt file, stored as a platform secret.
 # A local file path is also supported for development.
-YOUTUBE_COOKIES_B64 = os.getenv("YOUTUBE_COOKIES_B64", "").strip()
+YOUTUBE_COOKIES_B64 = "".join(
+    part
+    for part in [os.getenv("YOUTUBE_COOKIES_B64", "").strip()]
+    + [os.getenv(f"YOUTUBE_COOKIES_B64_PART_{index}", "").strip() for index in range(1, 10)]
+    if part
+)
 YOUTUBE_COOKIES_FILE = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
 _runtime_cookies_path: Path | None = None
 
@@ -60,6 +66,10 @@ def get_youtube_cookies_path() -> Path | None:
 
     try:
         cookie_data = base64.b64decode(YOUTUBE_COOKIES_B64, validate=True)
+        # Back4App limits environment variables to 1,023 characters. Accept a
+        # gzip-compressed Base64 payload as well as a plain Base64 cookie file.
+        if cookie_data.startswith(b"\x1f\x8b"):
+            cookie_data = gzip.decompress(cookie_data)
         if not cookie_data.strip():
             raise ValueError("decoded value is empty")
         with tempfile.NamedTemporaryFile(
@@ -69,7 +79,7 @@ def get_youtube_cookies_path() -> Path | None:
             _runtime_cookies_path = Path(cookie_file.name)
         os.chmod(_runtime_cookies_path, 0o600)
         return _runtime_cookies_path
-    except (binascii.Error, ValueError) as exc:
+    except (binascii.Error, OSError, ValueError) as exc:
         print(f"YOUTUBE_COOKIES_B64 is invalid ({exc}); continuing without YouTube cookies.", file=sys.stderr)
         return None
 

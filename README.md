@@ -103,13 +103,17 @@ Simply paste any Spotify URL into the chat:
 
 ### YouTube verification on cloud hosts
 
-Cloud IP addresses can trigger YouTube's “Sign in to confirm you’re not a bot” check. If that occurs, export a **Netscape-format** `cookies.txt` from a dedicated logged-in YouTube account, then create this Base64 value locally:
+Cloud IP addresses can trigger YouTube's “Sign in to confirm you’re not a bot” check. If that occurs, export a **Netscape-format** `cookies.txt` from a dedicated logged-in YouTube account, then create this gzip-compressed Base64 value locally (fits Back4App's variable-size limit):
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt"))
+$bytes = [IO.File]::ReadAllBytes("cookies.txt")
+$stream = New-Object IO.MemoryStream
+$gzip = New-Object IO.Compression.GzipStream($stream, [IO.Compression.CompressionMode]::Compress)
+$gzip.Write($bytes, 0, $bytes.Length); $gzip.Dispose()
+[Convert]::ToBase64String($stream.ToArray())
 ```
 
-Add the resulting value as the `YOUTUBE_COOKIES_B64` **secret/environment variable** in Back4App, then redeploy. Never commit the cookie file or its Base64 value. Cookies can expire and may need to be replaced.
+Add the resulting value as the `YOUTUBE_COOKIES_B64` **secret/environment variable** in Back4App, then redeploy. If it exceeds Back4App's 1,023-character limit, split the value into consecutive variables named `YOUTUBE_COOKIES_B64_PART_1`, `YOUTUBE_COOKIES_B64_PART_2`, and so on; the app joins them automatically. Never commit the cookie file or its Base64 value. Cookies can expire and may need to be replaced.
 
 The bot will download the tracks and send them directly to you.
 
