@@ -1,0 +1,22 @@
+# Python & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Secrets & Database
+.env
+data.db
+
+# Audio downloads
+downloads/*
+!downloads/.gitkeep
+
+# IDE & OS
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
