@@ -14,6 +14,49 @@ import config
 logger = logging.getLogger(__name__)
 
 
+class _YtDlpLogger:
+    """Forward yt-dlp messages to standard logging so Back4App shows them."""
+
+    def debug(self, msg):
+        # yt-dlp debug is very noisy; keep as debug so INFO logs stay clean.
+        logger.debug("yt-dlp: %s", msg)
+
+    def warning(self, msg):
+        logger.warning("yt-dlp: %s", msg)
+
+    def error(self, msg):
+        logger.error("yt-dlp: %s", msg)
+
+
+def _log_yt_dlp_diagnostics() -> None:
+    """Log one-line environment diagnostics to explain silent failures."""
+    try:
+        import shutil
+        import importlib.util as _ilu
+
+        yt_version = getattr(yt_dlp.version, "__version__", "unknown")
+        deno_path = shutil.which("deno")
+        node_path = shutil.which("node")
+        ejs_spec = _ilu.find_spec("yt_dlp_ejs") or _ilu.find_spec("yt-dlp-ejs")
+        cffi_spec = _ilu.find_spec("curl_cffi")
+        logger.info(
+            "yt-dlp env: version=%s deno=%s node=%s ejs=%s curl_cffi=%s ffmpeg=%s",
+            yt_version,
+            deno_path or "missing",
+            node_path or "missing",
+            "installed" if ejs_spec else "missing",
+            "installed" if cffi_spec else "missing",
+            config.FFMPEG_EXECUTABLE,
+        )
+        if not deno_path and not node_path:
+            logger.warning(
+                "yt-dlp: no JS runtime (deno/node) found; "
+                "signature/n challenges will fail. See https://github.com/yt-dlp/yt-dlp/wiki/EJS"
+            )
+    except Exception as diag_err:
+        logger.debug("yt-dlp diagnostics failed: %s", diag_err)
+
+
 def sanitize_filename(name: str) -> str:
     """Remove illegal characters from file names."""
     sanitized = re.sub(r'[\\/*?:"<>|]', "", name)
@@ -56,6 +99,8 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         "format": "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": output_template,
         "ffmpeg_location": config.FFMPEG_EXECUTABLE,
+        "logger": _YtDlpLogger(),
+        "verbose": False,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -107,17 +152,41 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
     if cookies_path:
         ydl_opts["cookiefile"] = str(cookies_path)
         logger.info("Using configured YouTube cookies for yt-dlp.")
+    else:
+        logger.warning("No YouTube cookies configured; tv clients will return LOGIN_REQUIRED.")
 
-    logger.info("Starting download for '%s - %s' with query '%s'", artist, title, query)
+    _log_yt_dlp_diagnostics()
+    logger.info(
+        "Starting download for '%s - %s' with query '%s' (clients=%s)",
+        artist,
+        title,
+        query,
+        ydl_opts["extractor_args"]["youtube"]["player_client"],
+    )
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([query])
     except Exception as e:
-        logger.error("yt-dlp error downloading '%s - %s': %s", artist, title, e)
+        logger.error(
+            "yt-dlp error downloading '%s - %s': %s: %s",
+            artist,
+            title,
+            type(e).__name__,
+            e or "<empty message>",
+            exc_info=True,
+        )
         return None
 
     if not target_mp3.exists():
-        logger.error("Target MP3 file not found after download: %s", target_mp3)
+        try:
+            leftovers = sorted(p.name for p in output_dir.glob(f"{file_stem}.*"))
+        except Exception:
+            leftovers = []
+        logger.error(
+            "Target MP3 file not found after download: %s (leftovers=%s)",
+            target_mp3,
+            leftovers,
+        )
         return None
 
     # Embed ID3 tags and album cover art
