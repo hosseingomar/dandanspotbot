@@ -27,6 +27,9 @@ BROWSER_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Cache for iTunes Search API lookups: "artist|title" -> result item or None.
+_ITUNES_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+
 
 # =========================================================================
 # 1. Zero-Credential Extractors (100% Free - Works without Developer Keys)
@@ -310,27 +313,79 @@ def fetch_track_cover_oembed(track_id: str) -> Optional[str]:
     return None
 
 
-def fetch_track_cover_itunes(artist: str, title: str) -> Optional[str]:
-    """Per-track artwork via Apple's free search API (no key needed).
-
-    Returns a 600px artwork URL or None. Used when Spotify's own
-    endpoints don't return per-track art.
-    """
+def _itunes_lookup(artist: str, title: str) -> Optional[Dict[str, Any]]:
+    """Single cached iTunes Search API lookup (artwork + genre, no key needed)."""
+    key = f"{(artist or '').lower()}|{(title or '').lower()}"
+    if key in _ITUNES_CACHE:
+        return _ITUNES_CACHE[key]
     try:
         resp = requests.get(
             "https://itunes.apple.com/search",
             params={"term": f"{artist} {title}", "media": "music", "entity": "song", "limit": 5},
             timeout=10,
         )
-        if resp.status_code != 200:
-            return None
-        for item in resp.json().get("results", []):
-            art = item.get("artworkUrl100")
-            if art:
-                return art.replace("100x100bb.jpg", "600x600bb.jpg")
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            item = results[0] if results else None
+            _ITUNES_CACHE[key] = item
+            return item
     except Exception as e:
-        logger.debug("iTunes cover fetch failed for %s - %s: %s", artist, title, e)
+        logger.debug("iTunes lookup failed for %s - %s: %s", artist, title, e)
+    _ITUNES_CACHE[key] = None
     return None
+
+
+def fetch_track_cover_itunes(artist: str, title: str) -> Optional[str]:
+    """Per-track artwork via Apple's free search API (no key needed).
+
+    Returns a 600px artwork URL or None. Used when Spotify's own
+    endpoints don't return per-track art.
+    """
+    item = _itunes_lookup(artist, title)
+    if item and item.get("artworkUrl100"):
+        return item["artworkUrl100"].replace("100x100bb.jpg", "600x600bb.jpg")
+    return None
+
+
+def fetch_track_genre_itunes(artist: str, title: str) -> Optional[str]:
+    """Real per-song genre via Apple's free search API (primaryGenreName)."""
+    item = _itunes_lookup(artist, title)
+    if item and item.get("primaryGenreName"):
+        return item["primaryGenreName"]
+    return None
+
+
+def enrich_track_genre(track: Dict[str, Any], sp=None) -> Dict[str, Any]:
+    """Attach a REAL genre to a track (never invented).
+
+    Sources, in order:
+    1. Spotify artist genres (sp.artist -> genres[0]) when an authenticated
+       client and artist IDs are available — Spotify's own classification.
+    2. iTunes primaryGenreName matched by artist + title.
+    Leaves the track untouched when neither source has data.
+    """
+    if not track or track.get("genre"):
+        return track
+    # 1. Spotify's own genre data (lives on the artist, not the track).
+    if sp is not None and track.get("artist_ids"):
+        try:
+            artist_data = sp.artist(track["artist_ids"][0])
+            genres = artist_data.get("genres", []) if artist_data else []
+            if genres:
+                track["genre"] = genres[0]
+                track["genre_source"] = "spotify"
+                return track
+        except Exception as e:
+            logger.debug("Spotify genre fetch failed for %s: %s", track.get("id"), e)
+    # 2. iTunes metadata match.
+    try:
+        genre = fetch_track_genre_itunes(track.get("artist", ""), track.get("title", ""))
+        if genre:
+            track["genre"] = genre
+            track["genre_source"] = "itunes"
+    except Exception as e:
+        logger.debug("Genre enrichment failed for %s: %s", track.get("id"), e)
+    return track
 
 
 def enrich_track_cover(track: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
@@ -369,6 +424,11 @@ def enrich_track_cover(track: Dict[str, Any], force: bool = False) -> Dict[str, 
         if itunes_cover:
             track["cover_url"] = itunes_cover
             track.pop("cover_is_playlist", None)
+            if not track.get("genre"):
+                genre = fetch_track_genre_itunes(track.get("artist", ""), track.get("title", ""))
+                if genre:
+                    track["genre"] = genre
+                    track["genre_source"] = "itunes"
     except Exception as e:
         logger.debug("Cover enrichment failed for track %s: %s", track_id, e)
     return track
@@ -390,6 +450,7 @@ def parse_track_item(track: Dict[str, Any], added_at: Optional[str] = None) -> O
         return None
     
     artists = ", ".join(a.get("name", "Unknown") for a in track.get("artists", []))
+    artist_ids = [a.get("id") for a in track.get("artists", []) if a.get("id")]
     album_data = track.get("album", {})
     album_name = album_data.get("name", "")
     release_date = album_data.get("release_date", "")
@@ -402,6 +463,7 @@ def parse_track_item(track: Dict[str, Any], added_at: Optional[str] = None) -> O
         "id": track.get("id"),
         "title": track.get("name", "Unknown Title"),
         "artist": artists,
+        "artist_ids": artist_ids,
         "album": album_name,
         "year": year,
         "duration_ms": track.get("duration_ms", 0),

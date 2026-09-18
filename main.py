@@ -59,6 +59,15 @@ def main() -> None:
     # Initialize database
     database.init_db()
 
+    # Crash recovery: jobs stuck in 'processing' (killed mid-download by a
+    # redeploy) go back to pending so the queue resumes where it paused.
+    try:
+        resumed = database.reset_processing_to_pending()
+        if resumed:
+            logger.info("Resumed %d interrupted download(s) from the queue.", resumed)
+    except Exception as e:
+        logger.warning("Queue recovery failed: %s", e)
+
     # Validate environment variables
     if not config.validate_config():
         print(
