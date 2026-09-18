@@ -445,6 +445,37 @@ def get_spotify_client(user_id: int, chat_id: int) -> Optional[spotipy.Spotify]:
     return spotipy.Spotify(auth=token_info["access_token"])
 
 
+_cc_client: Optional[spotipy.Spotify] = None
+
+
+def get_app_client() -> Optional[spotipy.Spotify]:
+    """App-only Spotify client (Client Credentials flow).
+
+    No user login, no Premium, no redirect needed — the app authenticates
+    itself with the Client ID/Secret and can read any public
+    playlist/album/track with full pagination. Returns None when no API
+    keys are configured; callers fall back to the keyless extractors.
+    """
+    global _cc_client
+    if _cc_client is not None:
+        return _cc_client
+    if not config.has_spotify_api_keys():
+        return None
+    try:
+        from spotipy.oauth2 import SpotifyClientCredentials
+
+        auth = SpotifyClientCredentials(
+            client_id=config.SPOTIPY_CLIENT_ID,
+            client_secret=config.SPOTIPY_CLIENT_SECRET,
+        )
+        _cc_client = spotipy.Spotify(auth_manager=auth)
+        logger.info("Using Spotify app client (Client Credentials) for catalog reads.")
+        return _cc_client
+    except Exception as e:
+        logger.warning("Spotify app client unavailable (%s); using keyless extractors.", e)
+        return None
+
+
 def fetch_track_cover_oembed(track_id: str) -> Optional[str]:
     """Lightweight per-track artwork lookup (single small JSON request)."""
     try:
@@ -656,6 +687,7 @@ def get_all_liked_songs(sp: spotipy.Spotify, max_limit: int = 1000) -> List[Dict
 
 def get_track_by_id(sp: Optional[spotipy.Spotify], track_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve details for a single track (uses API if client given, falls back to zero-key extractor)."""
+    sp = sp or get_app_client()
     if sp:
         try:
             raw_track = sp.track(track_id)
@@ -667,6 +699,7 @@ def get_track_by_id(sp: Optional[spotipy.Spotify], track_id: str) -> Optional[Di
 
 def get_playlist_tracks(sp: Optional[spotipy.Spotify], playlist_id: str) -> Tuple[str, List[Dict[str, Any]]]:
     """Retrieve playlist title and tracks (uses API if client given, falls back to zero-key extractor)."""
+    sp = sp or get_app_client()
     if sp:
         try:
             playlist_data = sp.playlist(playlist_id)
@@ -692,6 +725,7 @@ def get_playlist_tracks(sp: Optional[spotipy.Spotify], playlist_id: str) -> Tupl
 
 def get_album_tracks(sp: Optional[spotipy.Spotify], album_id: str) -> Tuple[str, List[Dict[str, Any]]]:
     """Retrieve album title and tracks."""
+    sp = sp or get_app_client()
     if sp:
         try:
             album_data = sp.album(album_id)
