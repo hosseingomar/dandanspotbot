@@ -53,7 +53,7 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
     query = f"ytsearch1:{artist} - {title} audio"
 
     ydl_opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": output_template,
         "ffmpeg_location": config.FFMPEG_EXECUTABLE,
         "postprocessors": [
@@ -68,12 +68,40 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         "socket_timeout": 30,
         "retries": 5,
         "fragment_retries": 5,
+        "quiet": False,
+        "no_warnings": False,
+        "geo_bypass": True,
+        # JS challenge solving (signature + n) requires Deno + EJS.
+        # pip installs need explicit opt-in for remote EJS components.
+        "remote_components": ["ejs:npm"],
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web", "mweb", "ios"]
+                # NOTE: android/ios do NOT support cookies (warnings in logs)
+                # and web/mweb REQUIRE a GVS PO Token for https formats.
+                # tv / web_embedded do NOT require a PO Token and DO
+                # support cookies, so try them first.
+                "player_client": ["tv_downgraded", "tv", "web_embedded", "web", "mweb"],
+                "player_skip": ["webpage"],
             }
         },
     }
+
+    # Impersonate Chrome to look less like a datacenter bot.
+    # Only enabled when curl_cffi is installed, otherwise yt-dlp
+    # raises "Impersonate target chrome is not available".
+    try:
+        import importlib.util as _ilu
+
+        if _ilu.find_spec("curl_cffi") is not None:
+            ydl_opts["impersonate"] = "chrome"
+    except Exception:
+        pass
+
+    # Optional manual PO Token override for datacenter IPs:
+    # set YOUTUBE_PO_TOKEN="web.gvs+XXX:mweb.gvs+YYY" to force it.
+    _po_token_env = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
+    if _po_token_env:
+        ydl_opts["extractor_args"]["youtube"]["po_token"] = _po_token_env.split(";")
 
     cookies_path = config.get_youtube_cookies_path()
     if cookies_path:
