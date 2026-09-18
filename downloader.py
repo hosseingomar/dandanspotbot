@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class _YtDlpLogger:
-    """Forward yt-dlp messages to standard logging so Back4App shows them."""
+    """Forward yt-dlp messages to logging AND stdout (Back4App system stream)."""
 
     def debug(self, msg):
         # yt-dlp debug is very noisy; keep as debug so INFO logs stay clean.
@@ -23,9 +23,11 @@ class _YtDlpLogger:
 
     def warning(self, msg):
         logger.warning("yt-dlp: %s", msg)
+        print(f"yt-dlp WARNING: {msg}", flush=True)
 
     def error(self, msg):
         logger.error("yt-dlp: %s", msg)
+        print(f"yt-dlp ERROR: {msg}", flush=True)
 
 
 def _log_yt_dlp_diagnostics() -> None:
@@ -39,20 +41,20 @@ def _log_yt_dlp_diagnostics() -> None:
         node_path = shutil.which("node")
         ejs_spec = _ilu.find_spec("yt_dlp_ejs") or _ilu.find_spec("yt-dlp-ejs")
         cffi_spec = _ilu.find_spec("curl_cffi")
-        logger.info(
-            "yt-dlp env: version=%s deno=%s node=%s ejs=%s curl_cffi=%s ffmpeg=%s",
-            yt_version,
-            deno_path or "missing",
-            node_path or "missing",
-            "installed" if ejs_spec else "missing",
-            "installed" if cffi_spec else "missing",
-            config.FFMPEG_EXECUTABLE,
+        env_msg = (
+            f"yt-dlp env: version={yt_version} deno={deno_path or 'missing'} "
+            f"node={node_path or 'missing'} ejs={'installed' if ejs_spec else 'missing'} "
+            f"curl_cffi={'installed' if cffi_spec else 'missing'} ffmpeg={config.FFMPEG_EXECUTABLE}"
         )
+        logger.info(env_msg)
+        print(env_msg, flush=True)
         if not deno_path and not node_path:
-            logger.warning(
+            warn_msg = (
                 "yt-dlp: no JS runtime (deno/node) found; "
                 "signature/n challenges will fail. See https://github.com/yt-dlp/yt-dlp/wiki/EJS"
             )
+            logger.warning(warn_msg)
+            print(f"yt-dlp WARNING: {warn_msg}", flush=True)
     except Exception as diag_err:
         logger.debug("yt-dlp diagnostics failed: %s", diag_err)
 
@@ -167,14 +169,13 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([query])
     except Exception as e:
-        logger.error(
-            "yt-dlp error downloading '%s - %s': %s: %s",
-            artist,
-            title,
-            type(e).__name__,
-            e or "<empty message>",
-            exc_info=True,
-        )
+        import traceback as _tb
+
+        err_msg = f"yt-dlp error downloading '{artist} - {title}': {type(e).__name__}: {e or '<empty message>'}"
+        logger.error(err_msg, exc_info=True)
+        # Duplicate to stdout so Back4App system stream shows it (no error filter needed).
+        print(err_msg, flush=True)
+        print(_tb.format_exc(), flush=True)
         return None
 
     if not target_mp3.exists():
@@ -182,11 +183,9 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
             leftovers = sorted(p.name for p in output_dir.glob(f"{file_stem}.*"))
         except Exception:
             leftovers = []
-        logger.error(
-            "Target MP3 file not found after download: %s (leftovers=%s)",
-            target_mp3,
-            leftovers,
-        )
+        missing_msg = f"Target MP3 file not found after download: {target_mp3} (leftovers={leftovers})"
+        logger.error(missing_msg)
+        print(missing_msg, flush=True)
         return None
 
     # Embed ID3 tags and album cover art
