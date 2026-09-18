@@ -388,11 +388,6 @@ async def send_audio_track(
             thumb_path = downloader.download_cover_thumbnail(cover_url, thumb_target)
 
         caption = f"🎵 <b>{title}</b>\n👤 <i>{artist}</i>"
-        # Third line: real genre when known, album name as fallback.
-        if track_info.get("genre"):
-            caption += f"\n🎧 <i>{track_info['genre']}</i>"
-        elif track_info.get("album"):
-            caption += f"\n💿 <i>{track_info['album']}</i>"
 
         # Attempt upload with retry
         max_attempts = 2
