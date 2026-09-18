@@ -30,6 +30,60 @@ class _YtDlpLogger:
         print(f"yt-dlp ERROR: {msg}", flush=True)
 
 
+def _progress_hook(status: Dict[str, Any]) -> None:
+    """yt-dlp progress callback, mirrored to stdout so Back4App shows it."""
+    try:
+        state = status.get("status")
+        if state == "downloading":
+            total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
+            downloaded = status.get("downloaded_bytes", 0)
+            print(f"yt-dlp progress: downloading {downloaded}/{total} bytes", flush=True)
+        elif state == "finished":
+            print(f"yt-dlp progress: finished {status.get('filename', '')}", flush=True)
+        elif state == "error":
+            print("yt-dlp progress: error", flush=True)
+    except Exception:
+        pass
+
+
+def _probe_search(query: str, ydl_opts: Dict[str, Any]) -> str:
+    """Failure-path diagnostic: what does the search query actually return?
+
+    Returns a one-line summary (entries found, first id/title, available
+    formats) so 'MP3 not found, leftovers=[]' stops being a mystery.
+    """
+    try:
+        probe_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "logger": _YtDlpLogger(),
+            "socket_timeout": 20,
+            "extractor_args": ydl_opts.get("extractor_args"),
+        }
+        if ydl_opts.get("cookiefile"):
+            probe_opts["cookiefile"] = ydl_opts["cookiefile"]
+        with yt_dlp.YoutubeDL(probe_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+        if not info:
+            return "probe: search returned no info"
+        if info.get("_type") == "playlist":
+            entries = [e for e in (info.get("entries") or []) if e]
+            if not entries:
+                return "probe: search returned 0 entries"
+            first = entries[0]
+            return (
+                f"probe: search returned {len(entries)} entries; "
+                f"first id={first.get('id')} title={first.get('title', '')[:60]}"
+            )
+        formats = info.get("formats") or []
+        return (
+            f"probe: direct video id={info.get('id')} title={info.get('title', '')[:60]} "
+            f"formats={len(formats)}"
+        )
+    except Exception as e:
+        return f"probe failed: {type(e).__name__}: {e}"
+
+
 def _log_yt_dlp_diagnostics() -> None:
     """Log one-line environment diagnostics to explain silent failures."""
     try:
@@ -169,6 +223,7 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         "quiet": False,
         "no_warnings": False,
         "geo_bypass": True,
+        "progress_hooks": [_progress_hook],
         # JS challenge solving (signature + n) requires Deno + EJS.
         # pip installs need explicit opt-in for remote EJS components.
         "remote_components": ["ejs:npm"],
@@ -207,13 +262,12 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         logger.warning("No YouTube cookies configured; tv clients will return LOGIN_REQUIRED.")
 
     _log_yt_dlp_diagnostics()
-    logger.info(
-        "Starting download for '%s - %s' with query '%s' (clients=%s)",
-        artist,
-        title,
-        query,
-        ydl_opts["extractor_args"]["youtube"]["player_client"],
+    start_msg = (
+        f"Starting download for '{artist} - {title}' with query '{query}' "
+        f"(clients={ydl_opts['extractor_args']['youtube']['player_client']})"
     )
+    logger.info(start_msg)
+    print(start_msg, flush=True)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([query])
@@ -245,6 +299,9 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         missing_msg = f"Target MP3 file not found after download: {target_mp3} (leftovers={leftovers})"
         logger.error(missing_msg)
         print(missing_msg, flush=True)
+        probe_msg = _probe_search(query, ydl_opts)
+        logger.error(probe_msg)
+        print(probe_msg, flush=True)
         return None
 
     # Embed ID3 tags and album cover art
