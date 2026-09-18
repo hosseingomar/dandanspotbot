@@ -31,19 +31,53 @@ class _YtDlpLogger:
 
 
 def _progress_hook(status: Dict[str, Any]) -> None:
-    """yt-dlp progress callback, mirrored to stdout so Back4App shows it."""
+    """yt-dlp progress callback, mirrored to stdout so Back4App shows it.
+
+    Throttled: logs at most every 10% or 15 seconds to avoid flooding logs
+    with hundreds of lines per download.
+    """
+    import time as _time
+
     try:
         state = status.get("status")
-        if state == "downloading":
-            total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
-            downloaded = status.get("downloaded_bytes", 0)
-            print(f"yt-dlp progress: downloading {downloaded}/{total} bytes", flush=True)
-        elif state == "finished":
+        if state == "finished":
             print(f"yt-dlp progress: finished {status.get('filename', '')}", flush=True)
+            _progress_hook._last = (0.0, 0.0)
         elif state == "error":
             print("yt-dlp progress: error", flush=True)
+        elif state == "downloading":
+            total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
+            downloaded = status.get("downloaded_bytes", 0)
+            now = _time.monotonic()
+            last_pct, last_t = getattr(_progress_hook, "_last", (0.0, 0.0))
+            pct = (downloaded / total * 100) if total else 0.0
+            if pct - last_pct >= 10.0 or now - last_t >= 15.0:
+                _progress_hook._last = (pct, now)  # type: ignore[attr-defined]
+                print(
+                    f"yt-dlp progress: downloading {downloaded}/{total} bytes ({pct:.0f}%)",
+                    flush=True,
+                )
     except Exception:
         pass
+
+
+_progress_hook._last = (0.0, 0.0)  # type: ignore[attr-defined]
+
+
+def _duration_guard(max_seconds: int):
+    """Reject search matches far longer than the Spotify track.
+
+    ytsearch sometimes matches hours-long mixes/videos (e.g. a 212 MB
+    'song'); those fill the tiny container disk and are never the track.
+    """
+
+    def _filter(info: Dict[str, Any], *, incomplete: bool = False):
+        duration = info.get("duration")
+        if duration and duration > max_seconds:
+            return f"skipping {duration}s video (longer than {max_seconds}s)"
+        return None
+
+    return _filter
 
 
 def _probe_search(query: str, ydl_opts: Dict[str, Any]) -> str:
@@ -202,12 +236,24 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
     # Search query
     query = f"ytsearch1:{artist} - {title} audio"
 
+    # Guard against hours-long wrong matches: allow the Spotify duration
+    # plus slack (live/extended versions), at least 15 min, at most 30 min.
+    try:
+        expected_sec = int(track_info.get("duration_sec") or 0)
+    except (TypeError, ValueError):
+        expected_sec = 0
+    max_seconds = min(max(expected_sec + 300, 900), 1800)
+
     ydl_opts = {
         "format": "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
         "outtmpl": output_template,
         "ffmpeg_location": config.FFMPEG_EXECUTABLE,
         "logger": _YtDlpLogger(),
         "verbose": False,
+        "match_filter": _duration_guard(max_seconds),
+        # Fail fast instead of filling the tiny container disk: a real song
+        # at 256kbps is a few MB; anything past 100 MB is a wrong match.
+        "max_filesize": 100 * 1024 * 1024,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
