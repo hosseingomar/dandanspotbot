@@ -112,10 +112,86 @@ def extract_track_no_auth(track_id_or_url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _get_anonymous_token() -> Optional[str]:
+    """Anonymous web-player token for Spotify's public API (no user keys needed).
+
+    Powers full playlist pagination past the embed page's 100-track cap.
+    """
+    try:
+        resp = requests.get(
+            "https://open.spotify.com/get_access_token?reason=transport&productType=web_player",
+            headers=BROWSER_HEADERS,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            token = resp.json().get("accessToken")
+            if token:
+                return token
+    except Exception as e:
+        logger.debug("Anonymous Spotify token fetch failed: %s", e)
+    return None
+
+
+def extract_playlist_tracks_api(playlist_id: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """Full playlist fetch via public API with anonymous token (no 100-track cap).
+
+    Returns (playlist_name, tracks). Raises on failure so callers can fall
+    back to the embed extractor.
+    """
+    token = _get_anonymous_token()
+    if not token:
+        raise RuntimeError("no anonymous token")
+    headers = dict(BROWSER_HEADERS)
+    headers["Authorization"] = f"Bearer {token}"
+
+    meta = requests.get(
+        f"https://api.spotify.com/v1/playlists/{playlist_id}?fields=name,images",
+        headers=headers,
+        timeout=15,
+    )
+    if meta.status_code != 200:
+        raise RuntimeError(f"playlist meta HTTP {meta.status_code}")
+    meta_data = meta.json()
+    playlist_name = meta_data.get("name", "Spotify Playlist")
+
+    tracks: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = requests.get(
+            f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks",
+            headers=headers,
+            params={"limit": 50, "offset": offset, "fields": "items(track(id,name,artists(id,name),album(name,release_date,images),duration_ms,track_number,external_urls,is_local)),next,total"},
+            timeout=15,
+        )
+        if page.status_code != 200:
+            raise RuntimeError(f"playlist tracks HTTP {page.status_code}")
+        data = page.json()
+        for item in data.get("items", []):
+            raw = item.get("track")
+            if not raw or raw.get("is_local"):
+                continue
+            parsed = parse_track_item(raw)
+            if parsed:
+                parsed["track_number"] = len(tracks) + 1
+                tracks.append(parsed)
+        if not data.get("next"):
+            break
+        offset += 50
+    if not tracks:
+        raise RuntimeError("no tracks returned")
+    return playlist_name, tracks
+
+
 def extract_playlist_no_auth(playlist_id_or_url: str) -> Tuple[str, List[Dict[str, Any]]]:
-    """Extract playlist name and all track items directly without credentials."""
+    """Extract playlist name and ALL track items directly without credentials."""
     parsed = parse_spotify_url(playlist_id_or_url)
     playlist_id = parsed[1] if parsed else playlist_id_or_url.strip()
+
+    # Full fetch first (embed page caps at 100 tracks).
+    try:
+        return extract_playlist_tracks_api(playlist_id)
+    except Exception as e:
+        logger.debug("Full playlist fetch failed for %s (%s); using embed (max 100).", playlist_id, e)
 
     embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
     try:
@@ -177,10 +253,80 @@ def extract_playlist_no_auth(playlist_id_or_url: str) -> Tuple[str, List[Dict[st
         return "Spotify Playlist", []
 
 
+def extract_album_tracks_api(album_id: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """Full album fetch via public API with anonymous token (no embed cap).
+
+    Returns (album_name, tracks). Raises on failure so callers can fall
+    back to the embed extractor.
+    """
+    token = _get_anonymous_token()
+    if not token:
+        raise RuntimeError("no anonymous token")
+    headers = dict(BROWSER_HEADERS)
+    headers["Authorization"] = f"Bearer {token}"
+
+    meta = requests.get(
+        f"https://api.spotify.com/v1/albums/{album_id}",
+        headers=headers,
+        params={"fields": "name,images,release_date"},
+        timeout=15,
+    )
+    if meta.status_code != 200:
+        raise RuntimeError(f"album meta HTTP {meta.status_code}")
+    meta_data = meta.json()
+    album_name = meta_data.get("name", "Spotify Album")
+    images = meta_data.get("images", [])
+    cover_url = images[0]["url"] if images else None
+    release_date = meta_data.get("release_date", "")
+    year = release_date[:4] if release_date else ""
+
+    tracks: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = requests.get(
+            f"https://api.spotify.com/v1/albums/{album_id}/tracks",
+            headers=headers,
+            params={"limit": 50, "offset": offset},
+            timeout=15,
+        )
+        if page.status_code != 200:
+            raise RuntimeError(f"album tracks HTTP {page.status_code}")
+        data = page.json()
+        for item in data.get("items", []):
+            if not item.get("id"):
+                continue
+            artists = ", ".join(a.get("name", "Unknown") for a in item.get("artists", []))
+            tracks.append({
+                "id": item.get("id"),
+                "title": item.get("name", "Unknown Title"),
+                "artist": artists,
+                "artist_ids": [a.get("id") for a in item.get("artists", []) if a.get("id")],
+                "album": album_name,
+                "year": year,
+                "duration_ms": item.get("duration_ms", 0),
+                "duration_sec": int(item.get("duration_ms", 0) / 1000),
+                "cover_url": cover_url,
+                "spotify_url": (item.get("external_urls") or {}).get("spotify", ""),
+                "track_number": len(tracks) + 1,
+            })
+        if not data.get("next"):
+            break
+        offset += 50
+    if not tracks:
+        raise RuntimeError("no tracks returned")
+    return album_name, tracks
+
+
 def extract_album_no_auth(album_id_or_url: str) -> Tuple[str, List[Dict[str, Any]]]:
-    """Extract album name and tracks without credentials."""
+    """Extract album name and ALL tracks without credentials."""
     parsed = parse_spotify_url(album_id_or_url)
     album_id = parsed[1] if parsed else album_id_or_url.strip()
+
+    # Full fetch first (embed page caps the track list like playlists).
+    try:
+        return extract_album_tracks_api(album_id)
+    except Exception as e:
+        logger.debug("Full album fetch failed for %s (%s); using embed.", album_id, e)
 
     embed_url = f"https://open.spotify.com/embed/album/{album_id}"
     try:
@@ -555,22 +701,29 @@ def get_album_tracks(sp: Optional[spotipy.Spotify], album_id: str) -> Tuple[str,
             release_date = album_data.get("release_date", "")
             year = release_date[:4] if release_date else ""
             tracks = []
-            for item in album_data.get("tracks", {}).get("items", []):
-                if not item.get("id"):
-                    continue
-                artists = ", ".join(a.get("name", "Unknown") for a in item.get("artists", []))
-                tracks.append({
-                    "id": item.get("id"),
-                    "title": item.get("name", "Unknown Title"),
-                    "artist": artists,
-                    "album": album_name,
-                    "year": year,
-                    "duration_ms": item.get("duration_ms", 0),
-                    "duration_sec": int(item.get("duration_ms", 0) / 1000),
-                    "cover_url": cover_url,
-                    "spotify_url": item.get("external_urls", {}).get("spotify", ""),
-                    "track_number": item.get("track_number", 1),
-                })
+            results = album_data.get("tracks", {})
+            while results:
+                for item in results.get("items", []):
+                    if not item.get("id"):
+                        continue
+                    artists = ", ".join(a.get("name", "Unknown") for a in item.get("artists", []))
+                    tracks.append({
+                        "id": item.get("id"),
+                        "title": item.get("name", "Unknown Title"),
+                        "artist": artists,
+                        "artist_ids": [a.get("id") for a in item.get("artists", []) if a.get("id")],
+                        "album": album_name,
+                        "year": year,
+                        "duration_ms": item.get("duration_ms", 0),
+                        "duration_sec": int(item.get("duration_ms", 0) / 1000),
+                        "cover_url": cover_url,
+                        "spotify_url": (item.get("external_urls") or {}).get("spotify", ""),
+                        "track_number": item.get("track_number", len(tracks) + 1),
+                    })
+                if results.get("next"):
+                    results = sp.next(results)
+                else:
+                    break
             return album_name, tracks
         except Exception as e:
             logger.warning("Spotipy album fetch failed, trying no-auth extractor: %s", e)

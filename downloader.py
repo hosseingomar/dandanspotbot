@@ -4,7 +4,7 @@ import uuid
 import logging
 import asyncio
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import requests
 import yt_dlp
 from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, TDRC, TRCK, ID3NoHeaderError
@@ -78,6 +78,78 @@ def _duration_guard(max_seconds: int):
         return None
 
     return _filter
+
+
+def _search_queries(artist: str, title: str) -> List[str]:
+    """Search phrases in order of precision (fallback when earlier ones miss)."""
+    return [
+        f"ytsearch5:{artist} - {title} audio",
+        f"ytsearch5:{artist} - {title}",
+        f"ytsearch5:{title} {artist}",
+    ]
+
+
+def _pick_search_result(
+    query: str, ydl_opts: Dict[str, Any], max_seconds: int, expected_sec: int
+) -> Optional[str]:
+    """Run a ytsearch5 query and return the best video URL.
+
+    Prefers entries whose duration fits max_seconds and is closest to the
+    Spotify duration; skips hours-long mixes and clips under 30s. Returns
+    None when the search yields nothing usable.
+    """
+    try:
+        search_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "logger": _YtDlpLogger(),
+            "socket_timeout": 20,
+            "extract_flat": True,
+            "extractor_args": ydl_opts.get("extractor_args"),
+        }
+        if ydl_opts.get("cookiefile"):
+            search_opts["cookiefile"] = ydl_opts["cookiefile"]
+        with yt_dlp.YoutubeDL(search_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+    except Exception as e:
+        msg = f"search failed for '{query}': {type(e).__name__}: {e}"
+        logger.warning(msg)
+        print(f"yt-dlp WARNING: {msg}", flush=True)
+        return None
+    if not info:
+        return None
+    entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
+    if not entries:
+        return None
+
+    def _score(entry: Dict[str, Any]) -> tuple:
+        duration = entry.get("duration") or 0
+        if not duration:
+            return (1, 0)  # unknown duration: usable but not preferred
+        if duration < 30 or duration > max_seconds:
+            return (2, 0)  # rejected bucket
+        closeness = abs(duration - expected_sec) if expected_sec else 0
+        return (0, -closeness)
+
+    ranked = sorted(entries, key=_score)
+    best = ranked[0]
+    bucket = _score(best)[0]
+    if bucket == 2:
+        msg = (
+            f"search '{query}': {len(entries)} entries but none fits "
+            f"(first id={best.get('id')} duration={best.get('duration')})"
+        )
+        logger.warning(msg)
+        print(f"yt-dlp WARNING: {msg}", flush=True)
+        return None
+    msg = (
+        f"search '{query}': picked id={best.get('id')} "
+        f"title={(best.get('title') or '')[:60]} duration={best.get('duration')} "
+        f"from {len(entries)} entries"
+    )
+    logger.info(msg)
+    print(msg, flush=True)
+    return f"https://www.youtube.com/watch?v={best['id']}"
 
 
 def _probe_search(query: str, ydl_opts: Dict[str, Any]) -> str:
@@ -233,8 +305,9 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
     output_template = str(output_dir / f"{file_stem}.%(ext)s")
     target_mp3 = output_dir / f"{file_stem}.mp3"
 
-    # Search query
-    query = f"ytsearch1:{artist} - {title} audio"
+    # Search queries, most precise first (fall back when one misses).
+    queries = _search_queries(artist, title)
+    query = queries[0].split(":", 1)[1]
 
     # Guard against hours-long wrong matches: allow the Spotify duration
     # plus slack (live/extended versions), at least 15 min, at most 30 min.
@@ -315,9 +388,23 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
     logger.info(start_msg)
     print(start_msg, flush=True)
     try:
+        video_url: Optional[str] = None
+        for search_query in queries:
+            video_url = _pick_search_result(
+                search_query, ydl_opts, max_seconds, expected_sec
+            )
+            if video_url:
+                query = search_query.split(":", 1)[1]
+                break
+        if not video_url:
+            raise RuntimeError(
+                f"no playable YouTube match for '{artist} - {title}' "
+                f"(tried {len(queries)} queries)"
+            )
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([query])
+            ydl.download([video_url])
     except Exception as e:
+        download_error = e
         import traceback as _tb
 
         err_msg = f"yt-dlp error downloading '{artist} - {title}': {type(e).__name__}: {e or '<empty message>'}"
