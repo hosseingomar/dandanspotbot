@@ -66,6 +66,48 @@ def sanitize_filename(name: str) -> str:
     return sanitized.strip(". ") or "audio"
 
 
+# Fragments yt-dlp may leave behind when a download is interrupted.
+_STALE_SUFFIXES = (".part", ".temp", ".ytdl", ".ytdlpart")
+
+
+def cleanup_stale_downloads(output_dir: Optional[Path] = None) -> int:
+    """Delete interrupted-download fragments and orphaned MP3s.
+
+    MP3s here are always transient (deleted right after Telegram upload),
+    so anything found at startup or before a download is an orphan from a
+    crash/redeploy and safe to remove. Returns files removed.
+    """
+    if output_dir is None:
+        output_dir = config.DOWNLOADS_DIR
+    if not output_dir.is_dir():
+        return 0
+    removed = 0
+    for path in output_dir.iterdir():
+        if not path.is_file():
+            continue
+        name = path.name
+        if name.endswith(_STALE_SUFFIXES) or name.endswith(".mp3"):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        logger.info("Cleaned %d stale file(s) from downloads.", removed)
+        print(f"Cleaned {removed} stale file(s) from downloads.", flush=True)
+    return removed
+
+
+def _free_mb(path: Path) -> float:
+    """Free disk space in MB for the filesystem containing path."""
+    try:
+        import shutil
+
+        return shutil.disk_usage(path).free / (1024 * 1024)
+    except OSError:
+        return -1.0
+
+
 def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None) -> Optional[Path]:
     """Download audio for a Spotify track using yt-dlp and embed official metadata and album art.
     
@@ -79,6 +121,15 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
     if output_dir is None:
         output_dir = config.DOWNLOADS_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # The container disk is tiny; interrupted downloads leave .part files
+    # that eventually fill it (Errno 28) and kill the server. Clear them
+    # before every download.
+    cleanup_stale_downloads(output_dir)
+    free = _free_mb(output_dir)
+    if 0 <= free < 200:
+        logger.warning("Low disk space before download: %.0f MB free.", free)
+        print(f"WARNING: low disk space: {free:.0f} MB free.", flush=True)
 
     title = track_info.get("title", "Unknown Title")
     artist = track_info.get("artist", "Unknown Artist")
@@ -174,6 +225,16 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         # Duplicate to stdout so Back4App system stream shows it (no error filter needed).
         print(err_msg, flush=True)
         print(_tb.format_exc(), flush=True)
+        # Disk-full leaves a .part fragment behind; clear it now so the
+        # next queued song is not doomed by the same leftover.
+        if isinstance(e, OSError) and e.errno == 28:
+            cleanup_stale_downloads(output_dir)
+            disk_msg = (
+                f"Disk full while downloading '{artist} - {title}'; "
+                "cleaned fragments, job will retry."
+            )
+            logger.error(disk_msg)
+            print(disk_msg, flush=True)
         return None
 
     if not target_mp3.exists():

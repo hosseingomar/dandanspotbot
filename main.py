@@ -68,6 +68,15 @@ def main() -> None:
     except Exception as e:
         logger.warning("Queue recovery failed: %s", e)
 
+    # Disk recovery: a full disk (Errno 28) stops the server; clear
+    # interrupted-download fragments and orphaned MP3s left by the crash.
+    try:
+        import downloader
+
+        downloader.cleanup_stale_downloads()
+    except Exception as e:
+        logger.warning("Download cleanup failed: %s", e)
+
     # Validate environment variables
     if not config.validate_config():
         print(
