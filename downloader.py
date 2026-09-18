@@ -133,16 +133,14 @@ def download_track(track_info: Dict[str, Any], output_dir: Optional[Path] = None
         },
     }
 
-    # Impersonate Chrome to look less like a datacenter bot.
-    # Only enabled when curl_cffi is installed, otherwise yt-dlp
-    # raises "Impersonate target chrome is not available".
-    try:
-        import importlib.util as _ilu
-
-        if _ilu.find_spec("curl_cffi") is not None:
-            ydl_opts["impersonate"] = "chrome"
-    except Exception:
-        pass
+    # Impersonation is intentionally disabled: yt-dlp 2026.8.19 crashes
+    # with a bare AssertionError when "impersonate" is passed as a plain
+    # string ("chrome") via the Python API (see
+    # yt_dlp/networking/impersonate.py: assert isinstance(target, ImpersonateTarget)).
+    # tv/web_embedded clients + cookies + Deno/EJS are sufficient without it.
+    # To re-enable later, pass an ImpersonateTarget object, not a string:
+    #   from yt_dlp.networking.impersonate import ImpersonateTarget
+    #   ydl_opts["impersonate"] = ImpersonateTarget.from_str("chrome")
 
     # Optional manual PO Token override for datacenter IPs:
     # set YOUTUBE_PO_TOKEN="web.gvs+XXX:mweb.gvs+YYY" to force it.
