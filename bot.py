@@ -321,6 +321,14 @@ async def send_audio_track(
     status_message: Optional[Any] = None,
 ) -> SendAudioResult:
     """Download and dispatch an audio file to Telegram chat with rich metadata, generous upload timeout, and retry."""
+    # Playlist extractor (no-auth) initially stamps every track with the
+    # playlist mosaic. Resolve the track's own artwork before download so
+    # both the Telegram thumbnail and the embedded MP3 cover are correct.
+    try:
+        track_info = spotify_service.enrich_track_cover(track_info)
+    except Exception as enrich_err:
+        logger.debug("Cover enrichment skipped: %s", enrich_err)
+
     title = track_info.get("title", "Unknown Title")
     artist = track_info.get("artist", "Unknown Artist")
     cover_url = track_info.get("cover_url")

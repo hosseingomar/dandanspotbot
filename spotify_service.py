@@ -153,11 +153,16 @@ def extract_playlist_no_auth(playlist_id_or_url: str) -> Tuple[str, List[Dict[st
                 "id": t_id,
                 "title": raw_track.get("title", "Unknown Title"),
                 "artist": raw_track.get("subtitle", "Unknown Artist"),
+                # Playlist embed trackList has no per-track artwork, so this
+                # is the playlist mosaic (4-tile). Resolved per-track later
+                # via enrich_track_cover() before download/upload.
                 "album": playlist_name,
                 "year": "",
                 "duration_ms": dur_ms,
                 "duration_sec": int(dur_ms / 1000),
                 "cover_url": playlist_cover,
+                "cover_is_playlist": True,
+                "playlist_cover": playlist_cover,
                 "spotify_url": f"https://open.spotify.com/track/{t_id}",
                 "track_number": len(tracks) + 1,
             })
@@ -289,6 +294,84 @@ def get_spotify_client(user_id: int, chat_id: int) -> Optional[spotipy.Spotify]:
     if not token_info:
         return None
     return spotipy.Spotify(auth=token_info["access_token"])
+
+
+def fetch_track_cover_oembed(track_id: str) -> Optional[str]:
+    """Lightweight per-track artwork lookup (single small JSON request)."""
+    try:
+        oembed_url = f"https://open.spotify.com/oembed?url=https://open.spotify.com/track/{track_id}"
+        resp = requests.get(oembed_url, headers=BROWSER_HEADERS, timeout=10)
+        if resp.status_code == 200:
+            thumb = resp.json().get("thumbnail_url")
+            if thumb:
+                return thumb
+    except Exception as e:
+        logger.debug("oEmbed cover fetch failed for track %s: %s", track_id, e)
+    return None
+
+
+def fetch_track_cover_itunes(artist: str, title: str) -> Optional[str]:
+    """Per-track artwork via Apple's free search API (no key needed).
+
+    Returns a 600px artwork URL or None. Used when Spotify's own
+    endpoints don't return per-track art.
+    """
+    try:
+        resp = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": f"{artist} {title}", "media": "music", "entity": "song", "limit": 5},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        for item in resp.json().get("results", []):
+            art = item.get("artworkUrl100")
+            if art:
+                return art.replace("100x100bb.jpg", "600x600bb.jpg")
+    except Exception as e:
+        logger.debug("iTunes cover fetch failed for %s - %s: %s", artist, title, e)
+    return None
+
+
+def enrich_track_cover(track: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
+    """Replace a playlist-mosaic cover with the track's own album artwork.
+
+    Only acts when the track came from the no-auth playlist extractor
+    (cover_is_playlist) unless force=True. Falls back to the full embed
+    extractor when oEmbed has no thumbnail. Never raises; keeps the
+    original cover on failure.
+    """
+    if not track or not track.get("id"):
+        return track
+    if not force and not track.get("cover_is_playlist"):
+        return track
+
+    track_id = track["id"]
+    try:
+        cover = fetch_track_cover_oembed(track_id)
+        if cover:
+            track["cover_url"] = cover
+            track.pop("cover_is_playlist", None)
+            return track
+        # Fallback: full track page has title/artist/album/year + art.
+        full = extract_track_no_auth(track_id)
+        if full and full.get("cover_url"):
+            track["cover_url"] = full["cover_url"]
+            track.pop("cover_is_playlist", None)
+            # Fill in real album/year when playlist extractor left them blank.
+            if full.get("album"):
+                track["album"] = full["album"]
+            if full.get("year") and not track.get("year"):
+                track["year"] = full["year"]
+            return track
+        # Last resort: iTunes Search API (free, no key) by artist/title.
+        itunes_cover = fetch_track_cover_itunes(track.get("artist", ""), track.get("title", ""))
+        if itunes_cover:
+            track["cover_url"] = itunes_cover
+            track.pop("cover_is_playlist", None)
+    except Exception as e:
+        logger.debug("Cover enrichment failed for track %s: %s", track_id, e)
+    return track
 
 
 def parse_spotify_url(url: str) -> Optional[Tuple[str, str]]:
