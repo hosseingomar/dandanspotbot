@@ -717,9 +717,14 @@ def get_playlist_tracks(sp: Optional[spotipy.Spotify], playlist_id: str) -> Tupl
                     results = sp.next(results)
                 else:
                     break
+            logger.info("Playlist %s: fetched %d tracks via Spotify API.", playlist_id, len(tracks))
+            print(f"Playlist {playlist_id}: fetched {len(tracks)} tracks via Spotify API.", flush=True)
             return playlist_name, tracks
         except Exception as e:
             logger.warning("Spotipy playlist fetch failed, trying no-auth extractor: %s", e)
+            print(f"Playlist {playlist_id}: Spotify API failed ({e}); using embed fallback.", flush=True)
+    else:
+        print(f"Playlist {playlist_id}: no Spotify API keys; using embed fallback.", flush=True)
     return extract_playlist_no_auth(playlist_id)
 
 
