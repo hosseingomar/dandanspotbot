@@ -189,9 +189,18 @@ def extract_playlist_no_auth(playlist_id_or_url: str) -> Tuple[str, List[Dict[st
 
     # Full fetch first (embed page caps at 100 tracks).
     try:
-        return extract_playlist_tracks_api(playlist_id)
+        name, tracks = extract_playlist_tracks_api(playlist_id)
+        print(
+            f"Playlist {playlist_id}: fetched {len(tracks)} tracks via anonymous token.",
+            flush=True,
+        )
+        return name, tracks
     except Exception as e:
         logger.debug("Full playlist fetch failed for %s (%s); using embed (max 100).", playlist_id, e)
+        print(
+            f"Playlist {playlist_id}: anonymous token fetch failed ({e}); using embed (max 100).",
+            flush=True,
+        )
 
     embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
     try:
@@ -324,9 +333,18 @@ def extract_album_no_auth(album_id_or_url: str) -> Tuple[str, List[Dict[str, Any
 
     # Full fetch first (embed page caps the track list like playlists).
     try:
-        return extract_album_tracks_api(album_id)
+        name, tracks = extract_album_tracks_api(album_id)
+        print(
+            f"Album {album_id}: fetched {len(tracks)} tracks via anonymous token.",
+            flush=True,
+        )
+        return name, tracks
     except Exception as e:
         logger.debug("Full album fetch failed for %s (%s); using embed.", album_id, e)
+        print(
+            f"Album {album_id}: anonymous token fetch failed ({e}); using embed.",
+            flush=True,
+        )
 
     embed_url = f"https://open.spotify.com/embed/album/{album_id}"
     try:
